@@ -66,6 +66,7 @@ def download_and_verify_file(accession: str, expected_md5: str, download_dir: st
         Downloads a single file (FASTQ, tabular, or configuration), shows progress,
         and verifies its MD5 checksum if provided. Skips the download if the file 
         already exists and is verified (or if no checksum is provided). Optionally unzips the file.
+        If --cleanup-local is enabled, deletes local file after successful GCS upload.
     Args:
         accession: The accession ID of the file to download.
         expected_md5: The expected MD5 checksum for verification.
@@ -119,11 +120,25 @@ def download_and_verify_file(accession: str, expected_md5: str, download_dir: st
                 colored_print(Color.GREEN, f"Checksum is correct. Skipping download for {accession}.")
                 if args.gcs_upload:
                     gcs_url = upload_to_gcs(target_path, args)
+                    # MODIFIED: Cleanup after successful upload
+                    if gcs_url and args.cleanup_local:
+                        try:
+                            os.remove(target_path)
+                            colored_print(Color.YELLOW, f"Cleaned up local file: {target_path}")
+                        except Exception as e:
+                            colored_print(Color.RED, f"Failed to remove local file: {e}")
                 return target_path, gcs_url
         else:
             colored_print(Color.YELLOW, f"No checksum provided for {accession}. Using existing file.")
             if args.gcs_upload:
                 gcs_url = upload_to_gcs(target_path, args)
+                # MODIFIED: Cleanup after successful upload
+                if gcs_url and args.cleanup_local:
+                    try:
+                        os.remove(target_path)
+                        colored_print(Color.YELLOW, f"Cleaned up local file: {target_path}")
+                    except Exception as e:
+                        colored_print(Color.RED, f"Failed to remove local file: {e}")
             return target_path, gcs_url
 
    # --- 2. Download the file with a progress bar ---
@@ -191,6 +206,15 @@ def download_and_verify_file(accession: str, expected_md5: str, download_dir: st
 
     # --- 5. Upload to GCS if enabled ---
     gcs_url = upload_to_gcs(produced_path, args) if args.gcs_upload else None
+    
+    # --- 6. MODIFIED: Cleanup local file after successful GCS upload ---
+    if gcs_url and args.cleanup_local:
+        try:
+            os.remove(produced_path)
+            colored_print(Color.YELLOW, f"Cleaned up local file: {produced_path}")
+        except Exception as e:
+            colored_print(Color.RED, f"Failed to remove local file: {e}")
+    
     return produced_path, gcs_url
 
 def process_sample_sheet(df, auth: HTTPBasicAuth, args, file_types='all', output_dir='downloads') -> pd.DataFrame:
@@ -313,6 +337,9 @@ if __name__ == "__main__":
 
         # Download only non-FASTQ files (seqspec, barcode_onlist, guide_design, barcode_hashtag_map) and keep compressed (default)
         python3 download_igvf.py --sample per_sample.tsv --keypair keypair.json --file-types other --output-dir ./reference_files
+        
+        # Download, upload to GCS, and delete local files to save space
+        python3 download_igvf.py --sample per_sample.tsv --keypair keypair.json --gunzip --gcs-upload --gcs-bucket igvf-bkt --gcs-prefix pipeline_inputs --cleanup-local
         """
     )
     parser.add_argument('--sample', required=True,
@@ -337,6 +364,11 @@ if __name__ == "__main__":
                              '(e.g., pipeline_runs/IGVFDS6673ZFFG_2025_08_06).')
     parser.add_argument('--gcs-force-upload', action='store_true',
                         help='Force upload to GCS even if file already exists in the bucket')
+    
+    # MODIFIED: Added cleanup-local flag
+    parser.add_argument('--cleanup-local', action='store_true',
+                        help='Delete local files after successful GCS upload to save disk space. '
+                             'Only works with --gcs-upload.')
 
     parser.add_argument('--dry-run', action='store_true',
                         help='Print actions without performing download/upload.')
@@ -344,6 +376,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.gcs_upload and (not args.gcs_bucket or not args.gcs_prefix):
         raise ValueError("When using --gcs-upload, both --gcs-bucket and --gcs-prefix must be provided.")
+    
+    # MODIFIED: Warning if cleanup-local used without gcs-upload
+    if args.cleanup_local and not args.gcs_upload:
+        colored_print(Color.YELLOW, "Warning: --cleanup-local has no effect without --gcs-upload")
 
     try:
         # Get authentication using the get_auth function

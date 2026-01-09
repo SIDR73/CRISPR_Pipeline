@@ -53,10 +53,12 @@ REQUIREMENTS:
         --output:    Output path for generated `.tsv`
 
     Optional:
-        --keypair:        Path to keypair JSON with `key` and `secret`
-        --hash_seqspec:   Fallback YAML path for hashing
-        --rna_seqspec:    Fallback YAML path for scRNA-seq
-        --sgrna_seqspec:  Fallback YAML path for sgRNA
+        --keypair:           Path to keypair JSON with `key` and `secret`
+        --hash_seqspec:      Fallback YAML path for hashing
+        --rna_seqspec:       Fallback YAML path for scRNA-seq
+        --sgrna_seqspec:     Fallback YAML path for sgRNA
+        --barcode_onlist:    Fallback path to barcode onlist file
+        --strand_specificity: Fallback strand specificity value (e.g., 'forward', 'reverse', 'unstranded')
 """
 
 
@@ -94,7 +96,9 @@ def modality_to_fallback_seqspec(modality, hash_seqspec, rna_seqspec, sgrna_seqs
     return None
 
 
-def generate_per_sample_tsv(analysis_set_accession, output_path, auth, hash_seqspec=None, rna_seqspec=None, sgrna_seqspec=None):
+def generate_per_sample_tsv(analysis_set_accession, output_path, auth, 
+                           hash_seqspec=None, rna_seqspec=None, sgrna_seqspec=None,
+                           barcode_onlist_fallback=None, strand_specificity_fallback=None):
     response = requests.get(
         f'{PORTAL}/analysis-sets/{analysis_set_accession}/@@object?format=json', auth=auth
     )
@@ -198,7 +202,7 @@ def generate_per_sample_tsv(analysis_set_accession, output_path, auth, hash_seqs
             if not read1 or not read2:
                 continue
 
-            # Handle seqspec fallback
+            # Handle seqspec fallback - MODIFIED: Changed to OR logic
             seqspecs = read1.get('seqspecs', [])
             seqspec_path = ''
             for seqspec in seqspecs:
@@ -208,7 +212,7 @@ def generate_per_sample_tsv(analysis_set_accession, output_path, auth, hash_seqs
                 else:
                     seqspec_path = seqspec.split('/')[-2]
             if not seqspec_path:
-                if hash_seqspec and rna_seqspec and sgrna_seqspec:
+                if hash_seqspec or rna_seqspec or sgrna_seqspec:  # MODIFIED: Changed from AND to OR
                     seqspec_path = modality_to_fallback_seqspec(
                         modality, hash_seqspec, rna_seqspec, sgrna_seqspec
                     )
@@ -218,14 +222,26 @@ def generate_per_sample_tsv(analysis_set_accession, output_path, auth, hash_seqs
                         'Provide a fallback using --hash_seqspec / --rna_seqspec / --sgrna_seqspec or make sure to deposit your seqspec in the data portal.'
                     )
 
+            # MODIFIED: Handle strand_specificity fallback
             if not(strand_specificity):
-                raise ValueError(f'Missing an associated strand specificty on {file_set_object["@id"]}. Please submit to the strand_specificity property on the data portal under the measurement set.')
+                if strand_specificity_fallback:
+                    strand_specificity = strand_specificity_fallback
+                    print(f"Using fallback strand_specificity: {strand_specificity}")
+                else:
+                    raise ValueError(f'Missing an associated strand specificty on {file_set_object["@id"]}. Please submit to the strand_specificity property on the data portal under the measurement set or provide --strand_specificity fallback.')
             
+            # MODIFIED: Handle barcode_onlist fallback
             if not(barcode_onlist):
-                raise ValueError(f'Missing an associated barcode onlist on {file_set_object["@id"]}. Please submit to the onlist_files property on the data portal under the measurement set.')
+                if barcode_onlist_fallback:
+                    barcode_onlist = [barcode_onlist_fallback]
+                    print(f"Using fallback barcode_onlist: {barcode_onlist_fallback}")
+                else:
+                    raise ValueError(f'Missing an associated barcode onlist on {file_set_object["@id"]}. Please submit to the onlist_files property on the data portal under the measurement set or provide --barcode_onlist fallback.')
 
+            # MODIFIED: Handle onlist_method fallback
             if not(onlist_method):
-                raise ValueError(f'Missing an associated onlist method on {file_set_object["@id"]}. Please submit to the onlist_method property on the data portal under the measurement set.')
+                onlist_method = 'no combination'  # Default fallback
+                print(f"Using default onlist_method: {onlist_method}")
 
             row = {
                 'R1_path': read1['@id'].split('/')[-2],
@@ -240,7 +256,7 @@ def generate_per_sample_tsv(analysis_set_accession, output_path, auth, hash_seqs
                 'flowcell_id': key[2],
                 'index': key[3],
                 'seqspec': seqspec_path,
-                'barcode_onlist': barcode_onlist[0].split('/')[-2] if barcode_onlist else '',
+                'barcode_onlist': barcode_onlist[0].split('/')[-2] if (barcode_onlist and barcode_onlist[0].startswith('/')) else (barcode_onlist[0] if barcode_onlist else ''),
                 'onlist_method': onlist_method,
                 'strand_specificity': strand_specificity,
                 'guide_design': guide_rna_sequences,
@@ -260,13 +276,16 @@ def main():
     parser = argparse.ArgumentParser(description="Generate per-sample TSV for Perturb-seq pipeline. Example usage:\n"
                                                  "python3 generate_per_sample.py --keypair igvf_key.json --accession IGVFDS7340YDHF "
                                                  "--output test_fetch.tsv --hash_seqspec hash_seq_spec.yaml "
-                                                 "--rna_seqspec rna_seq_spec.yaml --sgrna_seqspec sgrna_seq_spec.yaml")
+                                                 "--rna_seqspec rna_seq_spec.yaml --sgrna_seqspec sgrna_seq_spec.yaml "
+                                                 "--barcode_onlist 737K-august-2016.txt --strand_specificity forward")
     parser.add_argument("--accession", required=True, help="Analysis set accession")
     parser.add_argument("--output", required=True, help="Output TSV file path")
     parser.add_argument("--keypair", help="Optional path to keypair JSON file")
     parser.add_argument("--hash_seqspec", help="Fallback path to hash seqspec")
     parser.add_argument("--rna_seqspec", help="Fallback path to RNA seqspec")
     parser.add_argument("--sgrna_seqspec", help="Fallback path to sgRNA seqspec")
+    parser.add_argument("--barcode_onlist", help="Fallback path to barcode onlist file")
+    parser.add_argument("--strand_specificity", help="Fallback strand specificity (e.g., 'forward', 'reverse', 'unstranded')")
     args = parser.parse_args()
 
     print(f"Generating per-sample TSV from analysis set '{args.accession}'...")
@@ -277,7 +296,9 @@ def main():
         auth,
         hash_seqspec=args.hash_seqspec,
         rna_seqspec=args.rna_seqspec,
-        sgrna_seqspec=args.sgrna_seqspec
+        sgrna_seqspec=args.sgrna_seqspec,
+        barcode_onlist_fallback=args.barcode_onlist,
+        strand_specificity_fallback=args.strand_specificity
     )
 
 
@@ -293,3 +314,5 @@ if __name__ == "__main__":
 #python3  generate_per_sample.py --keypair igvf_key.json --accession IGVFDS9445RJOU --output test_fetch.tsv
 #seqspec not in the analysis set, but provided as fallback
 #python3 generate_per_sample.py --keypair igvf_key.json --accession IGVFDS7340YDHF --output test_fetch.tsv --hash_seqspec hash_seq_spec.yaml --rna_seqspec rna_seq_spec.yaml --sgrna_seqspec sgrna_seq_spec.yaml
+#with barcode onlist and strand specificity fallbacks
+#python3 generate_per_sample.py --keypair igvf_key.json --accession IGVFDS5057HJKP --output test_fetch.tsv --rna_seqspec rna_seqspec.yaml --sgrna_seqspec guide_seqspec.yaml --barcode_onlist 737K-august-2016.txt --strand_specificity forward
